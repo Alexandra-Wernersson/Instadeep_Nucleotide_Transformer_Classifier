@@ -9,6 +9,35 @@ from pathlib import Path
 import numpy as np
 import pickle
 
+class PromoterClassifier(hk.Module):
+    def __init__(self, hidden_dim=128, dropout_rate=0.3):
+        super().__init__(name="PromoterClassifier")
+        self.hidden_dim = hidden_dim
+        self.dropout_rate = dropout_rate
+
+    def __call__(self, embeddings_input, is_training: bool):
+        # CLS token
+        x = embeddings_input[:, 0, :]  # [batch, embed_dim]
+
+        # ---- MLP ----
+        x = hk.Linear(self.hidden_dim, name="dense1")(x)
+        x = jax.nn.relu(x)
+        if is_training:
+            x = hk.dropout(hk.next_rng_key(), self.dropout_rate, x)
+
+        x = hk.Linear(64, name="dense2")(x)
+        x = jax.nn.relu(x)
+        if is_training:
+            x = hk.dropout(hk.next_rng_key(), self.dropout_rate, x)
+
+        # ---- Output ----
+        logits = hk.Linear(1, name="output")(x)
+        return logits
+
+def PromoterClassifierNet(x, is_training: bool):
+    model = PromoterClassifier()
+    return model(x, is_training)
+
 class ClassifierTrainer:
     def __init__(self, model, config):
         self.data_dir = config["DATA PARAMS"]["data_dir"]
@@ -20,7 +49,7 @@ class ClassifierTrainer:
 
         self.model = model
 
-    def Train_Val_Test(self, train_data, test_data, val_data):
+    def Train_Val_Test(self, train_data, val_data, test_data):
     
         X_train = train_data['sequence'].tolist()
         Y_train = train_data['label'].values
@@ -42,14 +71,17 @@ class ClassifierTrainer:
 
         return embeddings
 
-    def binary_crossentropy(self, params, input_data, actual):
-        rng = jax.random.PRNGKey(0)
-        logits_preds = self.model.apply(params, rng, input_data)  # Shape: [batch_size, 1]
-    
-        logits_preds = logits_preds
-    
-        loss = optax.sigmoid_binary_cross_entropy(logits=logits_preds, labels=actual)
-    
+    def binary_crossentropy(self, params, rng, input_data, actual, is_training):
+        logits = self.model.apply(
+            params,
+            rng,
+            input_data,
+            is_training=is_training
+        )
+        loss = optax.sigmoid_binary_cross_entropy(
+            logits=logits,
+            labels=actual
+        )
         return jnp.mean(loss)
 
     def TrainModelInBatches(self, train_embeddings, Y_train, val_embeddings, Y_val, params, optimizer, optimizer_state):
@@ -57,6 +89,13 @@ class ClassifierTrainer:
     
         train_losses = []
         val_losses = []
+        train_rng = jax.random.PRNGKey(42)
+
+        best_val = float("inf")
+        best_params = None
+        patience = 3
+        patience_counter = 0
+
         for epoch in range(int(self.epochs)):
             epoch_train_losses = []
             for start in range(0, len(train_embeddings), int(self.batch_size)):
@@ -66,27 +105,37 @@ class ClassifierTrainer:
                 Y_batch = Y_train[start:end]
             
      #       print(f"Batch shapes: X={X_batch.shape}, Y={Y_batch.shape}")
-            
-                loss, gradients = value_and_grad(self.binary_crossentropy)(params, X_batch, Y_batch)
+                train_rng, subkey = jax.random.split(train_rng)
+                loss, gradients = value_and_grad(self.binary_crossentropy)(params, subkey, X_batch, Y_batch, True)
             
                 updates, optimizer_state = optimizer.update(gradients, optimizer_state)
                 params = optax.apply_updates(params, updates)
             
                 epoch_train_losses.append(loss)
 
-        val_loss = self.binary_crossentropy(params, val_embeddings, Y_val)
-    
-        # Store average training loss for epoch
-        avg_train_loss = jnp.mean(jnp.array(epoch_train_losses))
-        train_losses.append(float(avg_train_loss))
-        val_losses.append(float(val_loss))
+            val_loss = self.binary_crossentropy(params, jax.random.PRNGKey(0), val_embeddings, Y_val, False)
+            if val_loss < best_val:
+                best_val = val_loss
+                best_params = params
+                patience_counter = 0
+            else:
+                patience_counter += 1
+                if patience_counter >= patience:
+                    print("Early stopping")
+                    break
+            # Store average training loss for epoch
+            avg_train_loss = jnp.mean(jnp.array(epoch_train_losses))
+            train_losses.append(float(avg_train_loss))
+            val_losses.append(float(val_loss))
+        
+        # Print progress
+            print(f"Epoch {epoch+1}/{int(self.epochs)} - Train Loss: {avg_train_loss:.4f}, Val Loss: {val_loss:.4f}")
+        
         loss_dict = {
             'train_losses': train_losses,
             'val_losses': val_losses
             }
-        # Print progress
-        print(f"Epoch {epoch+1}/{int(self.epochs)} - Train Loss: {avg_train_loss:.4f}, Val Loss: {val_loss:.4f}")
-
+        
         return params, loss_dict
 
     
@@ -101,14 +150,18 @@ class ClassifierTrainer:
 
 
         # ---- Embeddings ----
-        emb_train_np = jax.device_get(embeddings_train)
-        emb_test_np  = jax.device_get(embeddings_test)
+        #emb_train_np = jax.device_get(embeddings_train)
+        #emb_test_np  = jax.device_get(embeddings_test)
 
-        train_path = self.result_dir / f"{prefix}_train_embeddings.npz"
-        test_path  = self.result_dir / f"{prefix}_test_embeddings.npz"
+        train_path = self.result_dir / f"{prefix}_train_embeddings.pkl"
+        test_path  = self.result_dir / f"{prefix}_test_embeddings.pkl"
 
-        np.savez_compressed(train_path, embeddings=emb_train_np)
-        np.savez_compressed(test_path, embeddings=emb_test_np)
+        #np.savez_compressed(train_path, embeddings=emb_train_np)
+        #np.savez_compressed(test_path, embeddings=emb_test_np)
+        with open(train_path, 'wb') as f:
+            pickle.dump(embeddings_train, f)
+        with open(test_path, 'wb') as f:
+            pickle.dump(embeddings_test, f)
 
         print(f"✓ Saved train embeddings → {train_path}")
         print(f"✓ Saved test embeddings  → {test_path}")
@@ -123,5 +176,5 @@ class ClassifierTrainer:
         # ---- Loss curves ----
         loss_path = self.result_dir / f"{prefix}_losses.pkl"
         with open(loss_path, "wb") as f:
-            pickle.dump(loss_dict, f)
+           pickle.dump(loss_dict, f)
         print(f"✓ Saved losses → {loss_path}")

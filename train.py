@@ -1,12 +1,7 @@
 import os
 import ast
-#try:
-#    import nucleotide_transformer
-#except:
-#    pip install numpy==1.23.5
-#    pip install git+https://github.com/instadeepai/nucleotide-transformer@main |tail -n 1
 import nucleotide_transformer
-
+import numpy as np
 
 import sys
 import haiku as hk
@@ -20,8 +15,8 @@ from datetime import datetime
 import configparser
 
 from data_utils import FastPromoterDataset, RealPromoterDataset
-from training_utils import ClassifierTrainer
-from Classifier import PromoterClassifierNet
+from training_utils import PromoterClassifierNet, ClassifierTrainer
+
 if __name__ == "__main__":
     
     # === 1. Load config ===
@@ -37,9 +32,7 @@ if __name__ == "__main__":
     # Load data or generate
     data_params = config['DATA PARAMS']
     dataset = FastPromoterDataset(data_dir=data_params['data_dir'])
-    print(data_params['load_data'])
     if data_params['load_data'] == True:
-        #data = pd.read_csv(data_params['data_dir'])
         data = dataset.load_data()
     else:
         data = dataset.create_dataset(n_samples=data_params['n_samples'], seq_length=int(data_params['seq_length']))
@@ -77,7 +70,14 @@ if __name__ == "__main__":
     # Run inference
     outs = forward_fn_jit(parameters, rng, tokens)
 
-    # Extract X/Y_train, X/Y_val, X/Y_test
+    outs = forward_fn_jit(parameters, rng, tokens)
+    print("First run (with compilation)")
+
+    #%%time
+    # Second inference (should be MUCH faster!)
+    outs = forward_fn_jit(parameters, rng, tokens)
+    print("Second run (cached - this should be fast!)")
+
     model = hk.transform(PromoterClassifierNet)
     trainer = ClassifierTrainer(model, config)
     train_data = data['train']  
@@ -86,6 +86,11 @@ if __name__ == "__main__":
 
     X_train, Y_train, X_val, Y_val, X_test, Y_test = trainer.Train_Val_Test(train_data, val_data, test_data)
     
+    # Ensure labels have shape (N, 1)
+    Y_train = jnp.asarray(Y_train, dtype=jnp.float32).reshape(-1, 1)
+    Y_val   = jnp.asarray(Y_val,   dtype=jnp.float32).reshape(-1, 1)
+    Y_test  = jnp.asarray(Y_test,  dtype=jnp.float32).reshape(-1, 1)
+
     train_embeddings = trainer.get_embeddings(
         X_train, tokenizer, forward_fn_jit, parameters, rng
     )
@@ -97,19 +102,21 @@ if __name__ == "__main__":
     test_embeddings = trainer.get_embeddings(   
         X_test, tokenizer, forward_fn_jit, parameters, rng
     )
-    # Train model
+    
+    train_rng = jax.random.PRNGKey(42) 
+
     hyperparams = config["HYPERPARAMS"]
-    model = hk.transform(PromoterClassifierNet)
-    params = model.init(rng, outs["embeddings_12"])
+    params = model.init(train_rng, outs["embeddings_12"], is_training=True)
     optimizer = optax.adam(learning_rate=float(hyperparams['learning_rate']))
     optimizer_state = optimizer.init(params)
     final_params, loss_dict = trainer.TrainModelInBatches(train_embeddings, 
                                                           Y_train, 
-                                                          test_embeddings, 
-                                                          Y_test,
+                                                          val_embeddings, 
+                                                          Y_val,
                                                           params,
                                                           optimizer, 
                                                           optimizer_state) 
+
     trainer.save_outs_embeddings_params(
         train_embeddings,
         test_embeddings,
@@ -117,4 +124,5 @@ if __name__ == "__main__":
         loss_dict,
         data_params["data_prefix"]
     )
-    print("Training done and results saved!")    
+    print("Training done and results saved!") 
+
