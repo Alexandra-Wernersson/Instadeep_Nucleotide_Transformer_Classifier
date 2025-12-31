@@ -1,0 +1,11 @@
+dm-haiku==0.0.16
+flax==0.10.4
+huggingface-hub==0.36.0
+jax==0.6.2
+jaxlib==0.6.2
+matplotlib==3.9.4
+nucleotide-transformer==0.0.1
+numpy==1.26.4
+optax==0.2.6
+pandas==2.2.3
+python==3.10.2
