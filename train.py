@@ -16,7 +16,7 @@ import configparser
 
 from data_utils import FastPromoterDataset, RealPromoterDataset
 from models.promoter_classifier import PromoterClassifierNet
-from training_utils import ClassifierTrainer
+from training_loop import ClassifierTrainer
 
 if __name__ == "__main__":
     
