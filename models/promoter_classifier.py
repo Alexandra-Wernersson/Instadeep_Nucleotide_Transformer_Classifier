@@ -7,6 +7,7 @@ import jax.numpy as jnp
 from pathlib import Path
 import numpy as np
 import pickle
+import haiku as hk
 
 class PromoterClassifier(hk.Module):
     def __init__(self, hidden_dim=128, dropout_rate=0.3):
