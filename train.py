@@ -15,7 +15,7 @@ from datetime import datetime
 import configparser
 
 from data_utils import FastPromoterDataset, RealPromoterDataset
-from models import PromoterClassifierNet
+from models.promoter_classifier import PromoterClassifierNet
 from training_utils import ClassifierTrainer
 
 if __name__ == "__main__":
